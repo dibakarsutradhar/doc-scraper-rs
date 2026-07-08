@@ -165,7 +165,7 @@ jobs:
           ls -la "${ARTIFACT_DIR}/"
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: doc-scraper-${{ matrix.target }}
           path: dist/
