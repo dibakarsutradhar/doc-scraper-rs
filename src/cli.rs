@@ -2,8 +2,18 @@ use clap::Parser;
 use std::path::PathBuf;
 use url::Url;
 
+/// Raw clap-derived struct holding every CLI flag the binary accepts.
+///
+/// Use [`ResolvedConfig`](crate::config::ResolvedConfig) at runtime instead —
+/// it merges `Cli` with default-derived values (e.g. the output directory
+/// slug, the `llms.txt` path) into a single bag that's easier to pass
+/// around.
 #[derive(Debug, Parser)]
-#[command(name = "doc-scraper", about = "Export GitBook docs as clean markdown.", version)]
+#[command(
+    name = "doc-scraper",
+    about = "Export GitBook docs as clean markdown.",
+    version
+)]
 pub struct Cli {
     /// GitBook docs base URL.
     pub url: Url,
@@ -20,8 +30,8 @@ pub struct Cli {
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     pub toc: bool,
 
-    /// Write llms.txt sidecar. Use --no-llms-txt to skip.
-    #[arg(long, env = "GITBOOK_SCRAPER_USER_AGENT")]
+    /// Path to llms.txt sidecar. Use --no-llms-txt to skip both llms.txt and llms-full.txt.
+    #[arg(long, env = "GITBOOK_SCRAPER_LLMS_TXT")]
     pub llms_txt: Option<PathBuf>,
 
     #[arg(long, default_value_t = false)]
@@ -64,7 +74,11 @@ pub struct Cli {
     pub quiet: bool,
 
     /// Override User-Agent.
-    #[arg(long, env = "GITBOOK_SCRAPER_USER_AGENT", default_value = "doc-scraper-rs/0.1")]
+    #[arg(
+        long,
+        env = "GITBOOK_SCRAPER_USER_AGENT",
+        default_value = "doc-scraper-rs/0.1"
+    )]
     pub user_agent: String,
 }
 
@@ -113,7 +127,14 @@ mod tests {
 
     #[test]
     fn filter_is_repeatable() {
-        let c = parse(&["doc-scraper", "https://x/", "--filter", "Tranche", "--filter", "Audits"]);
+        let c = parse(&[
+            "doc-scraper",
+            "https://x/",
+            "--filter",
+            "Tranche",
+            "--filter",
+            "Audits",
+        ]);
         assert_eq!(c.filter, vec!["Tranche".to_string(), "Audits".to_string()]);
     }
 }

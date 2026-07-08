@@ -2,6 +2,10 @@ use crate::error::Result;
 use std::time::Duration;
 use url::Url;
 
+/// Construct a shared `reqwest::Client` with the configured user agent and
+/// per-request timeout. One client is built at the start of a run and
+/// reused across all sitemap / page / llms.txt fetches so the underlying
+/// connection pool is amortised.
 pub fn build_client(user_agent: &str, timeout_secs: u64) -> Result<reqwest::Client> {
     let ua = user_agent.to_string();
     let timeout = Duration::from_secs(timeout_secs);
@@ -33,7 +37,10 @@ pub async fn fetch_with_retry(
                     attempt += 1;
                     continue;
                 }
-                return Ok(resp.error_for_status().map_err(crate::error::ScraperError::Http)?);
+                let mapped = resp
+                    .error_for_status()
+                    .map_err(crate::error::ScraperError::Http)?;
+                return Ok(mapped);
             }
             Err(_) if attempt < retries => {
                 let sleep = backoff_secs(delay_secs, attempt);

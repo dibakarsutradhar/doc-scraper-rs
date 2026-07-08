@@ -1,7 +1,10 @@
 use crate::error::{Result, ScraperError};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use url::Url;
 
+/// A single scraped page: source URL, optional extracted title, and the
+/// raw markdown body returned by GitBook's `.md` endpoint (or the soft-404
+/// HTML fallback body).
 #[derive(Debug, Clone)]
 pub struct Page {
     pub url: Url,
@@ -26,7 +29,8 @@ pub fn url_to_relative_path(url: &Url, base: &Url) -> Result<PathBuf> {
     if url.host_str() != base.host_str() {
         return Err(ScraperError::Other(format!(
             "url host {} does not match base {}",
-            url.host_str().unwrap_or(""), base.host_str().unwrap_or("")
+            url.host_str().unwrap_or(""),
+            base.host_str().unwrap_or("")
         )));
     }
     Ok(PathBuf::from(path))
@@ -40,21 +44,6 @@ pub fn url_to_flat_slug(url: &Url) -> Result<String> {
     }
     let slug = segs.join(".") + ".md";
     Ok(slug)
-}
-
-/// Reverse of url_to_relative_path (without the `.md` suffix) for index.md / llms.txt links.
-pub fn path_to_relative_url(path: &Path) -> String {
-    let s = path.to_string_lossy().replace('\\', "/");
-    let mut s = s.trim_end_matches(".md").to_string();
-    if s == "index" {
-        s.clear();
-    } else {
-        s = s.trim_end_matches("/index").to_string();
-    }
-    if s.is_empty() {
-        return String::new();
-    }
-    s
 }
 
 /// `docs.strata.markets` -> `strata-docs`, `docs.example.com` -> `example-docs`.
@@ -74,7 +63,9 @@ pub fn site_slug_from_url(url: &Url) -> String {
 mod tests {
     use super::*;
 
-    fn url(s: &str) -> Url { Url::parse(s).unwrap() }
+    fn url(s: &str) -> Url {
+        Url::parse(s).unwrap()
+    }
 
     #[test]
     fn url_to_relative_path_simple() {
@@ -118,20 +109,16 @@ mod tests {
     #[test]
     fn url_to_flat_slug_nested() {
         let u = url("https://docs.strata.markets/markets/ethena-usde/srusde");
-        assert_eq!(url_to_flat_slug(&u).unwrap(), "markets.ethena-usde.srusde.md");
+        assert_eq!(
+            url_to_flat_slug(&u).unwrap(),
+            "markets.ethena-usde.srusde.md"
+        );
     }
 
     #[test]
     fn url_to_flat_slug_root() {
         let u = url("https://docs.strata.markets/");
         assert_eq!(url_to_flat_slug(&u).unwrap(), "index.md");
-    }
-
-    #[test]
-    fn path_to_relative_url_strips_md_and_index() {
-        assert_eq!(path_to_relative_url(&PathBuf::from("introduction/why-strata.md")), "introduction/why-strata");
-        assert_eq!(path_to_relative_url(&PathBuf::from("markets/ethena-usde/index.md")), "markets/ethena-usde");
-        assert_eq!(path_to_relative_url(&PathBuf::from("index.md")), "");
     }
 
     #[test]

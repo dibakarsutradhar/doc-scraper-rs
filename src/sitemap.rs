@@ -1,6 +1,9 @@
 use crate::error::{Result, ScraperError};
 use url::Url;
 
+/// One entry from `sitemap-pages.xml`: the page URL plus the optional
+/// `lastmod` timestamp. The fetch pipeline takes a `Vec<PageRef>` and
+/// returns one result per entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PageRef {
     pub loc: Url,
@@ -10,8 +13,7 @@ pub struct PageRef {
 /// Fetches `https://<host>/sitemap.xml`, follows to `sitemap-pages.xml`, parses it.
 pub async fn fetch_sitemap(client: &reqwest::Client, base_url: &Url) -> Result<Vec<PageRef>> {
     let sitemap_url = base_url.join("/sitemap.xml")?;
-    let resp = client.get(sitemap_url).send().await?
-        .error_for_status()?;
+    let resp = client.get(sitemap_url).send().await?.error_for_status()?;
     let body = resp.text().await?;
     let pages_url = extract_sitemap_pages_url(&body, base_url)?;
     let pages_resp = client.get(pages_url).send().await?.error_for_status()?;
@@ -21,8 +23,7 @@ pub async fn fetch_sitemap(client: &reqwest::Client, base_url: &Url) -> Result<V
 
 /// Extracts the `<sitemap><loc>...</loc></sitemap>` URL pointing at the pages sitemap.
 pub fn extract_sitemap_pages_url(body: &str, base_url: &Url) -> Result<Url> {
-    let doc = roxmltree::Document::parse(body)
-        .map_err(|e| ScraperError::Xml(e.to_string()))?;
+    let doc = roxmltree::Document::parse(body).map_err(|e| ScraperError::Xml(e.to_string()))?;
     let root = doc.root_element();
     // <sitemapindex><sitemap><loc>...</loc></sitemap>...</sitemapindex>
     for node in root.descendants() {
@@ -36,18 +37,19 @@ pub fn extract_sitemap_pages_url(body: &str, base_url: &Url) -> Result<Url> {
     Err(ScraperError::Sitemap("no <loc> in sitemap index".into()))
 }
 
-/// Parses sitemap-pages.xml (a <urlset> of <url><loc>...</loc></url>) into PageRef records.
+/// Parses sitemap-pages.xml (a `urlset` of `url` / `loc` records) into PageRef records.
 pub fn parse_sitemap_pages(body: &str) -> Result<Vec<PageRef>> {
-    let doc = roxmltree::Document::parse(body)
-        .map_err(|e| ScraperError::Xml(e.to_string()))?;
+    let doc = roxmltree::Document::parse(body).map_err(|e| ScraperError::Xml(e.to_string()))?;
     let mut pages = Vec::new();
     for url_node in doc.descendants().filter(|n| n.tag_name().name() == "url") {
-        let loc_text = url_node.children()
+        let loc_text = url_node
+            .children()
             .find(|c| c.tag_name().name() == "loc")
             .and_then(|c| c.text())
             .ok_or_else(|| ScraperError::Sitemap("<url> missing <loc>".into()))?;
         let loc = Url::parse(loc_text.trim())?;
-        let lastmod = url_node.children()
+        let lastmod = url_node
+            .children()
             .find(|c| c.tag_name().name() == "lastmod")
             .and_then(|c| c.text())
             .map(str::to_owned);
@@ -70,10 +72,16 @@ mod tests {
             </urlset>"#;
         let pages = parse_sitemap_pages(body).unwrap();
         assert_eq!(pages.len(), 3);
-        assert_eq!(pages[0].loc.as_str(), "https://docs.example.com/introduction");
+        assert_eq!(
+            pages[0].loc.as_str(),
+            "https://docs.example.com/introduction"
+        );
         assert_eq!(pages[1].loc.as_str(), "https://docs.example.com/markets");
         assert_eq!(pages[1].lastmod.as_deref(), Some("2026-01-15"));
-        assert_eq!(pages[2].loc.as_str(), "https://docs.example.com/technical/security");
+        assert_eq!(
+            pages[2].loc.as_str(),
+            "https://docs.example.com/technical/security"
+        );
         assert_eq!(pages[2].lastmod, None);
     }
 

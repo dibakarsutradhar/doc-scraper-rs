@@ -1,6 +1,6 @@
 /target
 **/*.rs.bk
 .DS_Store
-/strata-docs/
-/strata-flat/
-/filtered/
+
+# Local smoke-test output from `cargo run --example soft_404_smoke`.
+.doc-scraper-smoke-out-*

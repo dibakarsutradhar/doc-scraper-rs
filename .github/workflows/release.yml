@@ -1,0 +1,149 @@
+name: Release
+
+# Build pre-built binaries for the 5 platforms we publish to, attach them to
+# a GitHub Release. Triggered by pushing a tag that matches `v*` (e.g. `v0.1.1`).
+# The release is created if it doesn't exist yet, so the first run on a new
+# tag will produce the Release page with all 5 archives attached.
+#
+# Manual: leave the tag push to the maintainer — this workflow does NOT
+# create or push tags on its own. To cut a release:
+#   git tag v0.1.1
+#   git push origin v0.1.1
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      # `--locked` honours the committed Cargo.lock — no surprise transitive
+      # bumps on a release commit.
+      - name: Build (release)
+        run: cargo build --release --target ${{ matrix.target }} --locked
+
+      - name: Package artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ARTIFACT_DIR="dist"
+          rm -rf "${ARTIFACT_DIR}"
+          mkdir -p "${ARTIFACT_DIR}"
+
+          # Windows archives the binary with a `.exe` suffix; unix does not.
+          case "${{ matrix.target }}" in
+            *windows*)
+              BIN_NAME="doc-scraper.exe"
+              ARCHIVE_EXT="zip"
+              ;;
+            *)
+              BIN_NAME="doc-scraper"
+              ARCHIVE_EXT="tar.xz"
+              ;;
+          esac
+
+          # Sanity check before packaging — better to fail loudly here than
+          # upload an empty archive.
+          SRC="target/${{ matrix.target }}/release/${BIN_NAME}"
+          if [[ ! -f "${SRC}" ]]; then
+            echo "::error::Expected binary not found at ${SRC}"
+            exit 1
+          fi
+
+          VERSION_NO_V="${GITHUB_REF_NAME#v}"   # strip leading 'v'
+          PKG_NAME="doc-scraper-${VERSION_NO_V}-${{ matrix.target }}"
+
+          # Stage the directory tree that goes inside the archive: binary
+          # plus README + CHANGELOG so the archive is self-contained.
+          STAGING="$(mktemp -d)"
+          mkdir -p "${STAGING}/${PKG_NAME}"
+          cp "${SRC}" "${STAGING}/${PKG_NAME}/"
+          cp README.md "${STAGING}/${PKG_NAME}/"
+          cp CHANGELOG.md "${STAGING}/${PKG_NAME}/"
+
+          case "${ARCHIVE_EXT}" in
+            zip)
+              (cd "${STAGING}" && zip -r "${ARTIFACT_DIR}/${PKG_NAME}.zip" "${PKG_NAME}") >/dev/null
+              ;;
+            tar.xz)
+              tar -cJf "${ARTIFACT_DIR}/${PKG_NAME}.tar.xz" -C "${STAGING}" "${PKG_NAME}"
+              ;;
+          esac
+
+          # Surface the SHA-256 next to each archive so the Release page can
+          # include them and so anyone scripting the download can verify
+          # integrity without scraping the page.
+          cd "${ARTIFACT_DIR}"
+          for f in *.zip *.tar.xz; do
+            [[ -e "${f}" ]] || continue
+            sha256sum "${f}" > "${f}.sha256"
+          done
+          ls -la "${ARTIFACT_DIR}"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: doc-scraper-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+
+      - name: Flatten artifact directory
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          find artifacts -type f \( -name '*.zip' -o -name '*.tar.xz' -o -name '*.sha256' \) \
+            -exec cp -v {} release-assets/ \;
+          ls -la release-assets
+
+      - name: Create / update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: release-assets/*

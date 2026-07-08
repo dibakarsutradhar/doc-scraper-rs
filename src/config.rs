@@ -2,6 +2,11 @@ use crate::cli::Cli;
 use crate::page::site_slug_from_url;
 use std::path::PathBuf;
 
+/// Fully-resolved runtime configuration: the raw clap [`Cli`] struct merged
+/// with defaults derived from the input (e.g. the output directory slugged
+/// from the site host, the `llms.txt` path defaulting into the output dir).
+///
+/// `ResolvedConfig::from_cli` is the one entry point that produces this.
 #[derive(Debug, Clone)]
 pub struct ResolvedConfig {
     pub url: url::Url,

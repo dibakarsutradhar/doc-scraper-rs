@@ -4,6 +4,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use url::Url;
 
+/// Result of a [`write_page`] call: the file was newly written, or a
+/// pre-existing file was left untouched (because `--overwrite` was not
+/// passed). The wrapped `PathBuf` is the on-disk target path in both
+/// cases.
 #[derive(Debug, PartialEq, Eq)]
 pub enum WriteOutcome {
     Written(PathBuf),
@@ -47,6 +51,10 @@ pub fn plan_path(
     Ok(full)
 }
 
+/// Write a single page's body to disk. Honours `--flat` and the
+/// `slug_counts` collision counter; with `overwrite = false`, pre-existing
+/// files at the planned target are returned as [`WriteOutcome::Skipped`]
+/// rather than overwritten, making re-runs idempotent.
 pub fn write_page(
     page: Page,
     body: String,
@@ -93,8 +101,20 @@ mod tests {
         let dir = tempdir().unwrap();
         let p = page("https://docs.strata.markets/markets/ethena-usde");
         let mut counts = HashMap::new();
-        let outcome = write_page(p, "# body".into(), dir.path(), false, true, &base(), &mut counts).unwrap();
-        let written = match outcome { WriteOutcome::Written(p) => p, _ => panic!("expected Written") };
+        let outcome = write_page(
+            p,
+            "# body".into(),
+            dir.path(),
+            false,
+            true,
+            &base(),
+            &mut counts,
+        )
+        .unwrap();
+        let written = match outcome {
+            WriteOutcome::Written(p) => p,
+            _ => panic!("expected Written"),
+        };
         assert!(written.exists());
         assert_eq!(std::fs::read_to_string(&written).unwrap(), "# body");
         // Subdir should exist
@@ -106,9 +126,16 @@ mod tests {
         let dir = tempdir().unwrap();
         let p = page("https://docs.strata.markets/markets/ethena-usde/srusde");
         let mut counts = HashMap::new();
-        let outcome = write_page(p, "x".into(), dir.path(), true, true, &base(), &mut counts).unwrap();
-        let written = match outcome { WriteOutcome::Written(p) => p, _ => panic!() };
-        assert_eq!(written.file_name().unwrap(), "markets.ethena-usde.srusde.md");
+        let outcome =
+            write_page(p, "x".into(), dir.path(), true, true, &base(), &mut counts).unwrap();
+        let written = match outcome {
+            WriteOutcome::Written(p) => p,
+            _ => panic!(),
+        };
+        assert_eq!(
+            written.file_name().unwrap(),
+            "markets.ethena-usde.srusde.md"
+        );
     }
 
     #[test]
@@ -117,9 +144,30 @@ mod tests {
         let p1 = page("https://docs.strata.markets/a/b");
         let p2 = page("https://docs.strata.markets/a/b"); // duplicate URL
         let mut counts = HashMap::new();
-        let _ = write_page(p1, "first".into(), dir.path(), true, true, &base(), &mut counts).unwrap();
-        let outcome = write_page(p2, "second".into(), dir.path(), true, true, &base(), &mut counts).unwrap();
-        let written = match outcome { WriteOutcome::Written(p) => p, _ => panic!() };
+        let _ = write_page(
+            p1,
+            "first".into(),
+            dir.path(),
+            true,
+            true,
+            &base(),
+            &mut counts,
+        )
+        .unwrap();
+        let outcome = write_page(
+            p2,
+            "second".into(),
+            dir.path(),
+            true,
+            true,
+            &base(),
+            &mut counts,
+        )
+        .unwrap();
+        let written = match outcome {
+            WriteOutcome::Written(p) => p,
+            _ => panic!(),
+        };
         assert_eq!(written.file_name().unwrap(), "a.b-2.md");
     }
 
@@ -129,8 +177,26 @@ mod tests {
         let p1 = page("https://docs.strata.markets/foo");
         let p2 = page("https://docs.strata.markets/foo");
         let mut counts = HashMap::new();
-        let _ = write_page(p1, "first".into(), dir.path(), false, false, &base(), &mut counts).unwrap();
-        let outcome = write_page(p2, "second".into(), dir.path(), false, false, &base(), &mut counts).unwrap();
+        let _ = write_page(
+            p1,
+            "first".into(),
+            dir.path(),
+            false,
+            false,
+            &base(),
+            &mut counts,
+        )
+        .unwrap();
+        let outcome = write_page(
+            p2,
+            "second".into(),
+            dir.path(),
+            false,
+            false,
+            &base(),
+            &mut counts,
+        )
+        .unwrap();
         assert!(matches!(outcome, WriteOutcome::Skipped(_)));
     }
 
@@ -140,8 +206,26 @@ mod tests {
         let p1 = page("https://docs.strata.markets/foo");
         let p2 = page("https://docs.strata.markets/foo");
         let mut counts = HashMap::new();
-        let _ = write_page(p1, "first".into(), dir.path(), false, true, &base(), &mut counts).unwrap();
-        let outcome = write_page(p2, "second".into(), dir.path(), false, true, &base(), &mut counts).unwrap();
+        let _ = write_page(
+            p1,
+            "first".into(),
+            dir.path(),
+            false,
+            true,
+            &base(),
+            &mut counts,
+        )
+        .unwrap();
+        let outcome = write_page(
+            p2,
+            "second".into(),
+            dir.path(),
+            false,
+            true,
+            &base(),
+            &mut counts,
+        )
+        .unwrap();
         assert!(matches!(outcome, WriteOutcome::Written(_)));
     }
 }
