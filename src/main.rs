@@ -61,7 +61,22 @@ use writer::{write_page, WriteOutcome};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) if e.kind() == clap::error::ErrorKind::MissingRequiredArgument => {
+            // No URL given: print the long help and exit 0 instead of
+            // dumping a usage line. Same UX as `git`, `cargo`, `gh`.
+            let mut cmd = <Cli as clap::CommandFactory>::command();
+            cmd.print_long_help().ok();
+            println!();
+            return Ok(());
+        }
+        Err(e) => {
+            // Any other clap error (unknown flag, bad URL, etc.) — let
+            // clap print usage + the error and exit non-zero.
+            e.exit();
+        }
+    };
     let mut cfg = ResolvedConfig::from_cli(cli);
 
     if cfg.verbose {

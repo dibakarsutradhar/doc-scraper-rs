@@ -12,6 +12,20 @@ use url::Url;
 #[command(
     name = "doc-scraper",
     about = "Export GitBook docs as clean markdown.",
+    long_about = "Export GitBook docs as clean markdown.\n\
+                  \n\
+                  Hits GitBook's hidden `text/markdown` endpoint directly — one HTTP\n\
+                  request per page, no HTML parsing, no browser. Produces a clean\n\
+                  <output>/<url-path>/<slug>.md mirror tree plus auto-generated\n\
+                  `llms.txt`, `llms-full.txt`, `AGENTS.md`, and a sectioned\n\
+                  `index.md` table of contents.\n\
+                  \n\
+                  Run with no arguments for the full flag reference; pass a URL to\n\
+                  start scraping. Examples:\n\
+                  \n\
+                      doc-scraper https://docs.strata.markets\n\
+                      doc-scraper https://docs.pareto.credit --filter Tranching\n\
+                      doc-scraper https://docs.example.com --flat -o ./scratch/",
     version
 )]
 pub struct Cli {
@@ -136,5 +150,23 @@ mod tests {
             "Audits",
         ]);
         assert_eq!(c.filter, vec!["Tranche".to_string(), "Audits".to_string()]);
+    }
+
+    #[test]
+    fn missing_url_produces_missing_required_argument_error() {
+        // The runtime `main()` intercepts this specific error kind to
+        // print long help instead of a usage line. The test guards
+        // against the error kind changing across clap upgrades.
+        let err = Cli::try_parse_from(["doc-scraper"]).unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn invalid_url_produces_value_validation_error() {
+        // Any non-MissingRequiredArgument error falls through to clap's
+        // default exit-handling (usage + non-zero exit). Make sure this
+        // path still produces an error of the expected kind.
+        let err = Cli::try_parse_from(["doc-scraper", "not-a-url"]).unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
     }
 }
