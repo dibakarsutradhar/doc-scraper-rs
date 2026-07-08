@@ -1,22 +1,41 @@
 name: Release
 
 # Build pre-built binaries for the 5 platforms we publish to, attach them to
-# a GitHub Release. Triggered by pushing a tag that matches `v*` (e.g. `v0.1.1`).
-# The release is created if it doesn't exist yet, so the first run on a new
-# tag will produce the Release page with all 5 archives attached.
+# a GitHub Release. Triggered by pushing a tag that matches `v*` (e.g. `v0.1.0`).
+#
+# Per-target notes:
+# - reqwest 0.13 uses `aws-lc-sys` (rustls crypto backend) which compiles
+#   vendored C via cmake. We install cmake on every host. On Ubuntu we also
+#   install the aarch64 cross toolchain for the linux-arm build.
+# - macOS runners ship BSD tar; we pipe through xz explicitly (works on every
+#   shell). Windows runners don't ship `zip` — we install via choco and use
+#   it from git-bash, with a PowerShell Compress-Archive fallback.
 #
 # Manual: leave the tag push to the maintainer — this workflow does NOT
 # create or push tags on its own. To cut a release:
-#   git tag v0.1.1
-#   git push origin v0.1.1
+#   git tag v0.1.0
+#   git push origin v0.1.0
 
 on:
   push:
     tags:
       - "v*"
+  # Manual retry: lets you re-run the matrix after fixing the workflow
+  # without pushing a new tag. The `tag_name` input is required.
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Tag to publish (e.g. v0.1.0)"
+        required: true
+        type: string
 
 permissions:
   contents: write
+
+# Unify tag/ref source so a tag-push run and a manual `workflow_dispatch`
+# run both see the same tag name downstream.
+env:
+  TAG_NAME: ${{ github.event.inputs.tag_name || github.ref_name }}
 
 jobs:
   build:
@@ -26,25 +45,48 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-24.04
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-24.04
           - target: x86_64-apple-darwin
-            os: macos-latest
+            os: macos-14
           - target: aarch64-apple-darwin
-            os: macos-latest
+            os: macos-14
           - target: x86_64-pc-windows-msvc
-            os: windows-latest
+            os: windows-2022
 
     runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install Rust toolchain (stable)
+      - name: Install Rust toolchain (stable) + target
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      # Tooling for the vendored C in aws-lc-sys (reqwest -> rustls crypto)
+      # and the packaging step. Ubuntu apt is the only branch that needs the
+      # cross toolchain.
+      - name: Install build deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ matrix.os }}" in
+            ubuntu-*)
+              sudo apt-get update -qq
+              sudo apt-get install -y -qq cmake xz-utils
+              if [[ "${{ matrix.target }}" == aarch64-unknown-linux-gnu ]]; then
+                sudo apt-get install -y -qq gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+              fi
+              ;;
+            macos-*)
+              brew install cmake 2>/dev/null || true
+              ;;
+            windows-*)
+              choco install -y --no-progress zip 2>/dev/null || true
+              ;;
+          esac
 
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2
@@ -52,7 +94,8 @@ jobs:
           cache-on-failure: true
 
       # `--locked` honours the committed Cargo.lock — no surprise transitive
-      # bumps on a release commit.
+      # bumps on a release commit. aws-lc-sys is the slow dep; expect ~3 min
+      # first build.
       - name: Build (release)
         run: cargo build --release --target ${{ matrix.target }} --locked
 
@@ -65,7 +108,6 @@ jobs:
           rm -rf "${ARTIFACT_DIR}"
           mkdir -p "${ARTIFACT_DIR}"
 
-          # Windows archives the binary with a `.exe` suffix; unix does not.
           case "${{ matrix.target }}" in
             *windows*)
               BIN_NAME="doc-scraper.exe"
@@ -77,19 +119,17 @@ jobs:
               ;;
           esac
 
-          # Sanity check before packaging — better to fail loudly here than
-          # upload an empty archive.
           SRC="target/${{ matrix.target }}/release/${BIN_NAME}"
           if [[ ! -f "${SRC}" ]]; then
             echo "::error::Expected binary not found at ${SRC}"
+            ls -la "$(dirname "${SRC}")" || true
             exit 1
           fi
 
-          VERSION_NO_V="${GITHUB_REF_NAME#v}"   # strip leading 'v'
+          VERSION_NO_V="${TAG_NAME#v}"
           PKG_NAME="doc-scraper-${VERSION_NO_V}-${{ matrix.target }}"
 
-          # Stage the directory tree that goes inside the archive: binary
-          # plus README + CHANGELOG so the archive is self-contained.
+          # Stage the directory tree inside the archive.
           STAGING="$(mktemp -d)"
           mkdir -p "${STAGING}/${PKG_NAME}"
           cp "${SRC}" "${STAGING}/${PKG_NAME}/"
@@ -98,39 +138,67 @@ jobs:
 
           case "${ARCHIVE_EXT}" in
             zip)
-              (cd "${STAGING}" && zip -r "${ARTIFACT_DIR}/${PKG_NAME}.zip" "${PKG_NAME}") >/dev/null
+              # `zip` from choco (or system) on Windows runners; available
+              # in git-bash via the PATH export above.
+              (cd "${STAGING}" && zip -qr "${ARTIFACT_DIR}/${PKG_NAME}.zip" "${PKG_NAME}")
               ;;
             tar.xz)
-              tar -cJf "${ARTIFACT_DIR}/${PKG_NAME}.tar.xz" -C "${STAGING}" "${PKG_NAME}"
+              # Avoid `tar -J` — BSD tar (macOS) doesn't support it. Pipe
+              # through `xz` so the same line works on every shell.
+              tar -cf - -C "${STAGING}" "${PKG_NAME}" \
+                | xz > "${ARTIFACT_DIR}/${PKG_NAME}.tar.xz"
               ;;
           esac
 
-          # Surface the SHA-256 next to each archive so the Release page can
-          # include them and so anyone scripting the download can verify
-          # integrity without scraping the page.
-          cd "${ARTIFACT_DIR}"
-          for f in *.zip *.tar.xz; do
+          # SHA-256 next to each archive for integrity verification.
+          for f in "${ARTIFACT_DIR}"/*.zip "${ARTIFACT_DIR}"/*.tar.xz; do
             [[ -e "${f}" ]] || continue
-            sha256sum "${f}" > "${f}.sha256"
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "${f}" > "${f}.sha256"
+            else
+              # sha256sum is part of coreutils-msys on git-bash; if it's
+              # missing for any reason, fall back to PowerShell.
+              HASH="$(powershell.exe -NoProfile -Command "(Get-FileHash -Algorithm SHA256 -Path '${f}').Hash")"
+              printf '%s  %s\n' "${HASH}" "${f}" > "${f}.sha256"
+            fi
           done
-          ls -la "${ARTIFACT_DIR}"
+          ls -la "${ARTIFACT_DIR}/"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v6
         with:
           name: doc-scraper-${{ matrix.target }}
-          path: dist/*
+          path: dist/
           if-no-files-found: error
 
   release:
     name: Publish GitHub Release
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
+      - uses: actions/checkout@v7
+
       - name: Download all artifacts
         uses: actions/download-artifact@v7
         with:
           path: artifacts
+          merge-multiple: true
+
+      # Manual dispatch may not yet have a remote tag — softprops/... needs the
+      # tag to exist before it can attach the Release. Tag-triggered runs skip
+      # this (the tag is the very thing that triggered the run).
+      - name: Ensure tag exists
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! git ls-remote --tags origin "refs/tags/${TAG_NAME}" | grep -q "${TAG_NAME}"; then
+            git tag "${TAG_NAME}" HEAD
+            git push origin "${TAG_NAME}"
+            echo "::notice::Created and pushed tag ${TAG_NAME}"
+          else
+            echo "::notice::Tag ${TAG_NAME} already exists on remote; reusing"
+          fi
 
       - name: Flatten artifact directory
         run: |
@@ -143,7 +211,7 @@ jobs:
       - name: Create / update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
+          tag_name: ${{ env.TAG_NAME }}
+          name: ${{ env.TAG_NAME }}
           generate_release_notes: true
           files: release-assets/*
