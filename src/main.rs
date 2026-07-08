@@ -4,6 +4,7 @@
 mod error;
 mod fetch;
 mod http;
+mod markdown;
 mod page;
 mod sitemap;
 mod writer;
