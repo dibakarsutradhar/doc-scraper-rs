@@ -6,6 +6,7 @@ mod fetch;
 mod http;
 mod page;
 mod sitemap;
+mod writer;
 
 fn main() {
     println!("doc-scraper-rs v0.1 — pipeline implemented in Task 9");
