@@ -35,10 +35,15 @@ All notable changes to `doc-scraper-rs` are recorded here. Versions follow
   of AGENTS.md's `## Sections` block, so agents can `cat` the right file
   on demand. Both are skipped under `--no-llms-txt`.
 - `.github/workflows/release.yml` — matrix build of pre-built binaries for
-  Linux (x86_64 + aarch64), macOS (Intel + Apple Silicon), and Windows
-  (x86_64), packaged as `.tar.xz` / `.zip` with sibling `.sha256` files,
-  uploaded to the GitHub Release on `v*` tag push. Lets users without a
-  Rust toolchain download a binary directly from the Releases page.
+  Linux (x86_64), macOS (Intel + Apple Silicon), and Windows (x86_64),
+  packaged as `.tar.xz` / `.zip` with sibling `.sha256` files, uploaded
+  to the GitHub Release on `v*` tag push. Lets users without a Rust
+  toolchain download a binary directly from the Releases page.
+  **Linux ARM (`aarch64-unknown-linux-gnu`) is intentionally not in the
+  prebuilt matrix** — `reqwest`'s `aws-lc-sys` cross-compile path needs a
+  CMake toolchain file + cross binutils + sysroot alignment that is too
+  fragile for an automated release. Linux ARM users can
+  `cargo install doc-scraper-rs` instead.
 
 ### Fixed
 

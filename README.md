@@ -83,13 +83,17 @@ Pick the archive that matches your OS and architecture, extract it, and put
 | Archive                                                  | Platform                          |
 | -------------------------------------------------------- | --------------------------------- |
 | `doc-scraper-<version>-x86_64-unknown-linux-gnu.tar.xz`  | Linux (Intel / AMD)               |
-| `doc-scraper-<version>-aarch64-unknown-linux-gnu.tar.xz` | Linux (ARM, e.g. Graviton, Pi)    |
 | `doc-scraper-<version>-x86_64-apple-darwin.tar.xz`       | macOS (Intel)                     |
 | `doc-scraper-<version>-aarch64-apple-darwin.tar.xz`      | macOS (Apple Silicon)             |
 | `doc-scraper-<version>-x86_64-pc-windows-msvc.zip`       | Windows                           |
 
 Each archive also includes `README.md` and `CHANGELOG.md`, plus a sibling
 `.sha256` file so you can verify integrity with `sha256sum -c`.
+
+**Linux on ARM?** Not in the prebuilt matrix yet — `reqwest`'s `aws-lc-sys`
+cross-compile path is currently flaky enough that we don't want to ship a
+broken archive. ARM Linux users can install via `cargo install doc-scraper-rs`
+from the Rust toolchain they almost certainly already have.
 
 ## Usage
 

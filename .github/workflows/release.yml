@@ -1,15 +1,31 @@
 name: Release
 
-# Build pre-built binaries for the 5 platforms we publish to, attach them to
+# Build pre-built binaries for the platforms we publish to, attach them to
 # a GitHub Release. Triggered by pushing a tag that matches `v*` (e.g. `v0.1.0`).
 #
 # Per-target notes:
-# - reqwest 0.13 uses `aws-lc-sys` (rustls crypto backend) which compiles
-#   vendored C via cmake. We install cmake on every host. On Ubuntu we also
-#   install the aarch64 cross toolchain for the linux-arm build.
-# - macOS runners ship BSD tar; we pipe through xz explicitly (works on every
-#   shell). Windows runners don't ship `zip` — we install via choco and use
-#   it from git-bash, with a PowerShell Compress-Archive fallback.
+# - reqwest 0.13 -> rustls -> aws-lc-sys compiles vendored C via cmake, so
+#   every host needs cmake installed upfront. macOS runners ship BSD tar;
+#   we pipe through xz explicitly so the same line works on every shell.
+# - Windows runners don't ship `zip` reliably and git-bash path translation
+#   trips up zip's arg parser; we use PowerShell Compress-Archive directly.
+#
+# Targets:
+#   x86_64-unknown-linux-gnu     (ubuntu-24.04)
+#   x86_64-apple-darwin          (macos-14)
+#   aarch64-apple-darwin         (macos-14)
+#   x86_64-pc-windows-msvc       (windows-2022)
+#
+# Not in this matrix (yet):
+#   aarch64-unknown-linux-gnu    - aws-lc-sys cross-compile is genuinely
+#                                  painful (CMake toolchain file, cross
+#                                  binutils, sysroot alignment). The
+#                                  `cross-rs` setup needed to make this
+#                                  reliable is more infrastructure than
+#                                  this release warrants. Linux ARM users
+#                                  can `cargo install doc-scraper-rs` if
+#                                  they have a Rust toolchain, which is
+#                                  the vast majority of that segment.
 #
 # Manual: leave the tag push to the maintainer — this workflow does NOT
 # create or push tags on its own. To cut a release:
@@ -46,8 +62,6 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-24.04
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04
           - target: x86_64-apple-darwin
             os: macos-14
           - target: aarch64-apple-darwin
@@ -65,9 +79,7 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      # Tooling for the vendored C in aws-lc-sys (reqwest -> rustls crypto)
-      # and the packaging step. Ubuntu apt is the only branch that needs the
-      # cross toolchain.
+      # Tooling for the vendored C in aws-lc-sys (reqwest -> rustls crypto).
       - name: Install build deps
         shell: bash
         run: |
@@ -76,15 +88,13 @@ jobs:
             ubuntu-*)
               sudo apt-get update -qq
               sudo apt-get install -y -qq cmake xz-utils
-              if [[ "${{ matrix.target }}" == aarch64-unknown-linux-gnu ]]; then
-                sudo apt-get install -y -qq gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-              fi
               ;;
             macos-*)
               brew install cmake 2>/dev/null || true
               ;;
             windows-*)
-              choco install -y --no-progress zip 2>/dev/null || true
+              # No choco install needed — we use PowerShell Compress-Archive
+              # below, which is built into the OS image.
               ;;
           esac
 
@@ -105,6 +115,9 @@ jobs:
           set -euo pipefail
 
           ARTIFACT_DIR="dist"
+          # On Windows runners the cwd is something like D:\a\doc-scraper-rs\doc-scraper-rs.
+          # Force a POSIX-style relative path so downstream commands work in both
+          # git-bash and PowerShell without surprises.
           rm -rf "${ARTIFACT_DIR}"
           mkdir -p "${ARTIFACT_DIR}"
 
@@ -138,9 +151,15 @@ jobs:
 
           case "${ARCHIVE_EXT}" in
             zip)
-              # `zip` from choco (or system) on Windows runners; available
-              # in git-bash via the PATH export above.
-              (cd "${STAGING}" && zip -qr "${ARTIFACT_DIR}/${PKG_NAME}.zip" "${PKG_NAME}")
+              # PowerShell Compress-Archive is part of every Windows host.
+              # Convert the bash paths to Windows paths first because
+              # PowerShell on Windows can't read POSIX-style paths reliably.
+              WIN_STAGING="$(cygpath -w "${STAGING}")"
+              WIN_PKG="$(cygpath -w "${STAGING}/${PKG_NAME}")"
+              WIN_OUT="$(cygpath -w "${ARTIFACT_DIR}/${PKG_NAME}.zip")"
+              powershell.exe -NoProfile -Command "
+                Compress-Archive -Path '${WIN_PKG}' -DestinationPath '${WIN_OUT}' -Force
+              "
               ;;
             tar.xz)
               # Avoid `tar -J` — BSD tar (macOS) doesn't support it. Pipe
@@ -155,10 +174,13 @@ jobs:
             [[ -e "${f}" ]] || continue
             if command -v sha256sum >/dev/null 2>&1; then
               sha256sum "${f}" > "${f}.sha256"
+            elif command -v shasum >/dev/null 2>&1; then
+              # macOS doesn't ship GNU coreutils; shasum is the Perl equivalent.
+              HASH="$(shasum -a 256 "${f}" | awk '{print $1}')"
+              printf '%s  %s\n' "${HASH}" "${f}" > "${f}.sha256"
             else
-              # sha256sum is part of coreutils-msys on git-bash; if it's
-              # missing for any reason, fall back to PowerShell.
-              HASH="$(powershell.exe -NoProfile -Command "(Get-FileHash -Algorithm SHA256 -Path '${f}').Hash")"
+              WIN_F="$(cygpath -w "${f}")"
+              HASH="$(powershell.exe -NoProfile -Command "(Get-FileHash -Algorithm SHA256 -Path '${WIN_F}').Hash")"
               printf '%s  %s\n' "${HASH}" "${f}" > "${f}.sha256"
             fi
           done
