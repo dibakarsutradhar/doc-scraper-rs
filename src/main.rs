@@ -1,6 +1,8 @@
 // Placeholder: implemented in Task 9 (pipeline glue).
 // Until then `cargo run` prints this notice.
 
+mod cli;
+mod config;
 mod error;
 mod fetch;
 mod http;
