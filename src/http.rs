@@ -12,7 +12,7 @@ pub fn build_client(user_agent: &str, timeout_secs: u64) -> Result<reqwest::Clie
     Ok(client)
 }
 
-/// Fetches a URL, retrying up to `retries` times on transport errors and 5xx responses.
+/// Fetches a URL, retrying up to `retries` times on transport errors and 5xx/429 responses.
 /// Sleeps `delay_secs`, then `2 * delay_secs`, etc., capped at `5 * delay_secs`.
 pub async fn fetch_with_retry(
     client: &reqwest::Client,
@@ -25,7 +25,9 @@ pub async fn fetch_with_retry(
         match client.get(url.as_str()).send().await {
             Ok(resp) => {
                 let status = resp.status();
-                if status.is_server_error() && attempt < retries {
+                // Retry on 5xx and 429 (rate-limited) responses.
+                let retryable = status.is_server_error() || status.as_u16() == 429;
+                if retryable && attempt < retries {
                     let sleep = backoff_secs(delay_secs, attempt);
                     tokio::time::sleep(Duration::from_secs_f64(sleep)).await;
                     attempt += 1;
@@ -89,5 +91,28 @@ mod tests {
         let _ = fetch_with_retry(&c, &url, 1, 0.0).await;
         // 1 retry means up to 2 attempts; with base 0.0 this should be near-instant.
         assert!(start.elapsed() < Duration::from_secs(2));
+    }
+
+    #[tokio::test]
+    async fn fetch_with_retry_retries_on_429() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        // First call: 429, second call: 200.
+        Mock::given(method("GET"))
+            .and(path("/x"))
+            .respond_with(ResponseTemplate::new(429))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/x"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+            .mount(&server)
+            .await;
+        let c = reqwest::Client::new();
+        let url = Url::parse(&format!("{}/x", server.uri())).unwrap();
+        let resp = fetch_with_retry(&c, &url, 2, 0.0).await.unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
     }
 }

@@ -1,4 +1,3 @@
-use crate::config::ResolvedConfig;
 use clap::Parser;
 use std::path::PathBuf;
 use url::Url;
@@ -10,7 +9,7 @@ pub struct Cli {
     pub url: Url,
 
     /// Output directory.
-    #[arg(short, long, env = "GITBOOK_SCRAPER_OUTPUT_DIR", default_value = "./<site-slug>/")]
+    #[arg(short, long, env = "GITBOOK_SCRAPER_OUTPUT_DIR")]
     pub output: Option<PathBuf>,
 
     /// Flatten URLs into filenames instead of mirroring hierarchy.

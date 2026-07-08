@@ -1,7 +1,8 @@
-use crate::error::{Result, ScraperError};
-use crate::page::Page;
+use crate::error::Result;
+use crate::page::{url_to_relative_path, Page};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use url::Url;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum WriteOutcome {
@@ -14,34 +15,31 @@ pub fn plan_path(
     page: &Page,
     dir: &Path,
     flat: bool,
+    base: &Url,
     slug_counts: &mut HashMap<String, usize>,
 ) -> Result<PathBuf> {
-    let base = if flat {
-        let slug = crate::page::url_to_flat_slug(&page.url)?;
-        slug
+    let base_name = if flat {
+        crate::page::url_to_flat_slug(&page.url)?
     } else {
-        // Mirror mode: derive from base URL; we store base alongside body in caller.
-        // For tests, mirror mode uses the Page's stored derived path; main.rs computes it.
-        // Here, the convention is the page URL's full path under dir.
-        let mut p = page.url.path().trim_start_matches('/').to_string();
-        if p.is_empty() { p = "index".into(); }
-        if p.ends_with('/') { p.push_str("index"); }
-        if !p.ends_with(".md") { p.push_str(".md"); }
-        p
+        // Mirror mode: reuse the canonical url_to_relative_path helper so we
+        // don't drift from page.rs. Caller passes the site `base` URL.
+        url_to_relative_path(&page.url, base)?
+            .to_string_lossy()
+            .replace('\\', "/")
     };
 
     // Mirror mode is 1:1 (same URL → same file), so no collision counter is needed.
     // Collision suffixing only applies in flat mode.
     let filename = if !flat {
-        base
+        base_name
     } else {
-        let entry = slug_counts.entry(base.clone()).or_insert(0);
+        let entry = slug_counts.entry(base_name.clone()).or_insert(0);
         *entry += 1;
         if *entry == 1 {
-            base
+            base_name
         } else {
             // Numeric suffix: foo.md → foo-2.md, foo-3.md, ...
-            let stem = base.trim_end_matches(".md");
+            let stem = base_name.trim_end_matches(".md");
             format!("{stem}-{}.md", *entry)
         }
     };
@@ -55,9 +53,10 @@ pub fn write_page(
     dir: &Path,
     flat: bool,
     overwrite: bool,
+    base: &Url,
     slug_counts: &mut HashMap<String, usize>,
 ) -> Result<WriteOutcome> {
-    let path = plan_path_for_page(&page, dir, flat, slug_counts)?;
+    let path = plan_path(&page, dir, flat, base, slug_counts)?;
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)?;
@@ -68,16 +67,6 @@ pub fn write_page(
     }
     std::fs::write(&path, body.as_bytes())?;
     Ok(WriteOutcome::Written(path))
-}
-
-// Helper that captures the mode-aware plan without needing caller to construct a "Page"
-fn plan_path_for_page(
-    page: &Page,
-    dir: &Path,
-    flat: bool,
-    slug_counts: &mut HashMap<String, usize>,
-) -> Result<PathBuf> {
-    plan_path(page, dir, flat, slug_counts)
 }
 
 #[cfg(test)]
@@ -95,12 +84,16 @@ mod tests {
         }
     }
 
+    fn base() -> Url {
+        Url::parse("https://docs.strata.markets/").unwrap()
+    }
+
     #[test]
     fn mirror_mode_creates_subdirs_and_writes_file() {
         let dir = tempdir().unwrap();
         let p = page("https://docs.strata.markets/markets/ethena-usde");
         let mut counts = HashMap::new();
-        let outcome = write_page(p, "# body".into(), dir.path(), false, true, &mut counts).unwrap();
+        let outcome = write_page(p, "# body".into(), dir.path(), false, true, &base(), &mut counts).unwrap();
         let written = match outcome { WriteOutcome::Written(p) => p, _ => panic!("expected Written") };
         assert!(written.exists());
         assert_eq!(std::fs::read_to_string(&written).unwrap(), "# body");
@@ -113,7 +106,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let p = page("https://docs.strata.markets/markets/ethena-usde/srusde");
         let mut counts = HashMap::new();
-        let outcome = write_page(p, "x".into(), dir.path(), true, true, &mut counts).unwrap();
+        let outcome = write_page(p, "x".into(), dir.path(), true, true, &base(), &mut counts).unwrap();
         let written = match outcome { WriteOutcome::Written(p) => p, _ => panic!() };
         assert_eq!(written.file_name().unwrap(), "markets.ethena-usde.srusde.md");
     }
@@ -124,8 +117,8 @@ mod tests {
         let p1 = page("https://docs.strata.markets/a/b");
         let p2 = page("https://docs.strata.markets/a/b"); // duplicate URL
         let mut counts = HashMap::new();
-        let _ = write_page(p1, "first".into(), dir.path(), true, true, &mut counts).unwrap();
-        let outcome = write_page(p2, "second".into(), dir.path(), true, true, &mut counts).unwrap();
+        let _ = write_page(p1, "first".into(), dir.path(), true, true, &base(), &mut counts).unwrap();
+        let outcome = write_page(p2, "second".into(), dir.path(), true, true, &base(), &mut counts).unwrap();
         let written = match outcome { WriteOutcome::Written(p) => p, _ => panic!() };
         assert_eq!(written.file_name().unwrap(), "a.b-2.md");
     }
@@ -136,8 +129,8 @@ mod tests {
         let p1 = page("https://docs.strata.markets/foo");
         let p2 = page("https://docs.strata.markets/foo");
         let mut counts = HashMap::new();
-        let _ = write_page(p1, "first".into(), dir.path(), false, false, &mut counts).unwrap();
-        let outcome = write_page(p2, "second".into(), dir.path(), false, false, &mut counts).unwrap();
+        let _ = write_page(p1, "first".into(), dir.path(), false, false, &base(), &mut counts).unwrap();
+        let outcome = write_page(p2, "second".into(), dir.path(), false, false, &base(), &mut counts).unwrap();
         assert!(matches!(outcome, WriteOutcome::Skipped(_)));
     }
 
@@ -147,8 +140,8 @@ mod tests {
         let p1 = page("https://docs.strata.markets/foo");
         let p2 = page("https://docs.strata.markets/foo");
         let mut counts = HashMap::new();
-        let _ = write_page(p1, "first".into(), dir.path(), false, true, &mut counts).unwrap();
-        let outcome = write_page(p2, "second".into(), dir.path(), false, true, &mut counts).unwrap();
+        let _ = write_page(p1, "first".into(), dir.path(), false, true, &base(), &mut counts).unwrap();
+        let outcome = write_page(p2, "second".into(), dir.path(), false, true, &base(), &mut counts).unwrap();
         assert!(matches!(outcome, WriteOutcome::Written(_)));
     }
 }

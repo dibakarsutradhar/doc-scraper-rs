@@ -10,8 +10,17 @@ pub async fn fetch_all(
     pages: Vec<PageRef>,
     concurrency: usize,
     retries: u32,
-    delay_secs: f64,
+    mut delay_secs: f64,
 ) -> Vec<Result<(PageRef, String)>> {
+    // Clamp negative user-supplied delay to zero. The pre-fetch sleep in
+    // `fetch_one` and the exponential backoff inside `fetch_with_retry` both
+    // consume `delay_secs`; clamping here ensures neither path produces a
+    // negative sleep duration. Effective per-request rate is bounded below by
+    // the larger of (delay_secs) and the backoff cap (5 * delay_secs) on the
+    // final retry.
+    if delay_secs < 0.0 {
+        delay_secs = 0.0;
+    }
     let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency.max(1)));
     let client = Arc::new(client);
     let mut tasks = FuturesUnordered::new();
@@ -20,7 +29,11 @@ pub async fn fetch_all(
         let permit_sem = semaphore.clone();
         let client = client.clone();
         tasks.push(async move {
-            let _permit = permit_sem.acquire_owned().await.expect("semaphore closed");
+            // We own the semaphore (it is constructed above and never closed),
+            // so `acquire_owned` cannot fail. Use `unwrap_or_else` instead of
+            // `expect` so a future refactor that drops the semaphore does not
+            // panic the whole pipeline.
+            let _permit = permit_sem.acquire_owned().await.unwrap_or_else(|_| unreachable!("semaphore is owned by this future and never closed"));
             let result = fetch_one(&client, &page.loc, retries, delay_secs).await;
             match result {
                 Ok(body) => Ok((page, body)),
@@ -42,7 +55,10 @@ async fn fetch_one(
     retries: u32,
     delay_secs: f64,
 ) -> Result<String> {
-    // Delay first to be polite even on success path.
+    // Per-request politeness delay is applied *before every attempt*, including
+    // each retry inside `fetch_with_retry` (which adds its own exponential
+    // backoff on top). Effective per-request floor = max(delay_secs,
+    // exponential backoff sequence capped at 5*delay_secs).
     if delay_secs > 0.0 {
         tokio::time::sleep(std::time::Duration::from_secs_f64(delay_secs)).await;
     }
