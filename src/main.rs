@@ -2,6 +2,7 @@
 // Until then `cargo run` prints this notice.
 
 mod error;
+mod page;
 mod sitemap;
 
 fn main() {
