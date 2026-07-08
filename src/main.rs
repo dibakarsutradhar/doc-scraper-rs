@@ -2,6 +2,7 @@
 // Until then `cargo run` prints this notice.
 
 mod error;
+mod fetch;
 mod http;
 mod page;
 mod sitemap;
