@@ -1,6 +1,9 @@
 // Placeholder: implemented in Task 9 (pipeline glue).
 // Until then `cargo run` prints this notice.
 
+mod error;
+mod sitemap;
+
 fn main() {
     println!("doc-scraper-rs v0.1 — pipeline implemented in Task 9");
 }
