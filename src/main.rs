@@ -1,6 +1,7 @@
 use anyhow::Context;
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
+use regex::Regex;
 use std::collections::HashMap;
 use std::io::Write;
 use tracing_subscriber::EnvFilter;
@@ -72,7 +73,7 @@ async fn main() -> anyhow::Result<()> {
     let mut errors: u32 = 0;
 
     for (page_ref, body) in results.into_iter().flatten() {
-        let page = Page { url: page_ref.loc.clone(), title: extract_title(&body), body: body.clone() };
+        let page = Page { url: page_ref.loc.clone(), title: extract_title(&body, page_ref.loc.as_str()), body: body.clone() };
         // filter
         if !cfg.filters.is_empty()
             && !cfg.filters.iter().any(|f| page.title.as_deref().unwrap_or("").contains(f))
@@ -102,7 +103,7 @@ async fn main() -> anyhow::Result<()> {
     if let Some(body) = homepage_fallback {
         let already = written_files.iter().any(|(_, u, _)| u.is_empty());
         if !already {
-            let page = Page { url: cfg.url.clone(), title: extract_title(&body), body: body.clone() };
+            let page = Page { url: cfg.url.clone(), title: extract_title(&body, cfg.url.as_str()), body: body.clone() };
             let _ = write_page(page, body, &cfg.output_dir, cfg.flat, cfg.overwrite, &mut slug_counts);
         }
     }
@@ -134,8 +135,25 @@ fn mk_progress(total: usize) -> ProgressBar {
     pb
 }
 
-fn extract_title(body: &str) -> Option<String> {
-    body.lines().find(|l| l.starts_with("# ")).map(|l| l.trim_start_matches("# ").trim().to_string())
+fn extract_title(body: &str, url: &str) -> Option<String> {
+    // Strategy 1: try <title>...</title> from HTML body (GitBook returns HTML at .md endpoint).
+    if let Some(caps) = Regex::new(r"(?is)<title[^>]*>(.*?)</title>").ok().and_then(|re| re.captures(body)) {
+        let t = caps.get(1)?.as_str().trim();
+        if !t.is_empty() {
+            return Some(t.to_string());
+        }
+    }
+    // Strategy 2: derive human-readable title from URL path's last non-empty segment.
+    if let Ok(parsed) = url::Url::parse(url) {
+        if let Some(seg) = parsed.path_segments().and_then(|s| s.filter(|x| !x.is_empty()).last()) {
+            let human: String = seg.replace(['-', '_'], " ");
+            let trimmed = human.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn first_paragraph(body: &str) -> Option<String> {
@@ -153,4 +171,36 @@ async fn fetch_llms_txt(client: &reqwest::Client, base: &url::Url) -> Result<Str
         return Err(ScraperError::Other(format!("unexpected content-type {ct}")));
     }
     resp.text().await.map_err(ScraperError::Http)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_title;
+
+    #[test]
+    fn extract_title_from_html_title_tag() {
+        let body = r#"<html><head><title>Foo</title></head><body>x</body></html>"#;
+        assert_eq!(extract_title(body, "https://example.com/x"), Some("Foo".to_string()));
+    }
+
+    #[test]
+    fn extract_title_trims_whitespace() {
+        let body = r#"<html><head><title>   Bar   </title></head><body>x</body></html>"#;
+        assert_eq!(extract_title(body, "https://example.com/x"), Some("Bar".to_string()));
+    }
+
+    #[test]
+    fn extract_title_falls_back_to_url_slug() {
+        let body = "<html><head></head><body>no title tag here</body></html>";
+        assert_eq!(
+            extract_title(body, "https://example.com/path/some-page"),
+            Some("some page".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_title_returns_none_when_no_signal() {
+        let body = "totally empty body with nothing useful";
+        assert_eq!(extract_title(body, "not a url at all"), None);
+    }
 }
