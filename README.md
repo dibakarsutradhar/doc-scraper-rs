@@ -77,8 +77,7 @@ cargo add doc-scraper-rs
 
 If you don't want to install the Rust toolchain at all, download a pre-built
 binary from the [GitHub Releases page](https://github.com/dibakarsutradhar/doc-scraper-rs/releases/latest).
-Pick the archive that matches your OS and architecture, extract it, and put
-`doc-scraper` (or `doc-scraper.exe` on Windows) somewhere on your `PATH`:
+Pick the archive that matches your OS and architecture:
 
 | Archive                                                  | Platform                          |
 | -------------------------------------------------------- | --------------------------------- |
@@ -87,8 +86,104 @@ Pick the archive that matches your OS and architecture, extract it, and put
 | `doc-scraper-<version>-aarch64-apple-darwin.tar.xz`      | macOS (Apple Silicon)             |
 | `doc-scraper-<version>-x86_64-pc-windows-msvc.zip`       | Windows                           |
 
-Each archive also includes `README.md` and `CHANGELOG.md`, plus a sibling
-`.sha256` file so you can verify integrity with `sha256sum -c`.
+Each archive contains the binary plus `README.md` and `CHANGELOG.md`, with a
+sibling `.sha256` file for `sha256sum -c` verification.
+
+### Install from the prebuilt archive
+
+`doc-scraper` is a **command-line tool**. After downloading, you need a
+Terminal — double-clicking the binary in Finder opens Terminal briefly,
+prints nothing (no TTY is attached for the prompt), and exits. Run it from
+the shell instead.
+
+**macOS / Linux:**
+
+```bash
+# 1. Detect OS + arch and pick the right target triple.
+OS="$(uname -s)"
+ARCH="$(uname -m)"
+case "$OS:$ARCH" in
+  Darwin:x86_64)  TRIPLE="x86_64-apple-darwin" ;;
+  Darwin:arm64)   TRIPLE="aarch64-apple-darwin" ;;
+  Linux:x86_64)   TRIPLE="x86_64-unknown-linux-gnu" ;;
+  Linux:aarch64|Linux:arm64)  TRIPLE="aarch64-unknown-linux-gnu" ;;
+  *) echo "Unsupported platform: $OS $ARCH" >&2; exit 1 ;;
+esac
+
+# 2. Discover the latest release tag. /releases/latest redirects to
+#    /releases/tag/<TAG>; follow once and parse the basename.
+TAG="$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+  https://github.com/dibakarsutradhar/doc-scraper-rs/releases/latest \
+  | sed 's|.*/tag/||')"
+VER="${TAG#v}"
+BASE="https://github.com/dibakarsutradhar/doc-scraper-rs/releases/download/${TAG}"
+ARCHIVE="doc-scraper-${VER}-${TRIPLE}.tar.xz"
+
+# 3. Download the archive and its .sha256.
+curl -fL -o doc-scraper.tar.xz     "${BASE}/${ARCHIVE}"
+curl -fL -o doc-scraper.tar.xz.sha "${BASE}/${ARCHIVE}.sha256"
+
+# 4. Verify integrity.
+shasum -a 256 -c doc-scraper.tar.xz.sha
+
+# 5. Extract.
+tar -xJf doc-scraper.tar.xz
+
+# 6. Move the binary somewhere on your PATH. ~/.local/bin is XDG-respecting
+#    and doesn't need sudo.
+mkdir -p ~/.local/bin
+mv "doc-scraper-${VER}-${TRIPLE}/doc-scraper" ~/.local/bin/
+
+# 7. (macOS only) Strip the Gatekeeper quarantine attribute. The binary
+#    is unsigned, so first-run will otherwise show "cannot be opened
+#    because the developer cannot be verified".
+xattr -d com.apple.quarantine ~/.local/bin/doc-scraper
+
+# 8. Make sure ~/.local/bin is on PATH. Most shells don't include it by
+#    default. Add this to ~/.zshrc or ~/.bashrc:
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+
+# 9. Open a new Terminal tab (so the PATH change takes effect) and verify:
+doc-scraper --version
+```
+
+You can also install to `/usr/local/bin` (system-wide) if you prefer —
+substitute that path in step 6. `sudo` required.
+
+**Windows (PowerShell):**
+
+```powershell
+# 1. Resolve the latest release tag.
+$tag = (Invoke-WebRequest -Method Head `
+  -Uri 'https://github.com/dibakarsutradhar/doc-scraper-rs/releases/latest' `
+  -MaximumRedirection 0 -ErrorAction SilentlyContinue).Headers.Location `
+  -split '/')[-1]
+$ver = $tag.TrimStart('v')
+
+# 2. Download.
+$base = "https://github.com/dibakarsutradhar/doc-scraper-rs/releases/download/$tag"
+Invoke-WebRequest -Uri "$base/doc-scraper-$ver-x86_64-pc-windows-msvc.zip" -OutFile doc-scraper.zip
+Invoke-WebRequest -Uri "$base/doc-scraper-$ver-x86_64-pc-windows-msvc.zip.sha256" -OutFile doc-scraper.zip.sha256
+
+# 3. Verify integrity (PowerShell 5+).
+$expected = (Get-Content doc-scraper.zip.sha256 -Raw).Split(' ')[0]
+$actual   = (Get-FileHash -Algorithm SHA256 doc-scraper.zip).Hash
+if ($expected -ne $actual) { throw "SHA-256 mismatch: expected $expected, got $actual" }
+
+# 4. Extract. PowerShell's Expand-Archive is fine for this layout.
+Expand-Archive -Path doc-scraper.zip -DestinationPath .
+
+# 5. Move to a directory on PATH. The user-local Scripts folder works
+#    without admin rights.
+$dest = "$env:LOCALAPPDATA\Microsoft\WindowsApps"
+Move-Item "doc-scraper-$ver-x86_64-pc-windows-msvc\doc-scraper.exe" "$dest\"
+
+# 6. Open a new PowerShell window and verify.
+doc-scraper --version
+```
+
+Windows SmartScreen may show "Windows protected your PC" on first launch.
+Click **More info → Run anyway**. (We don't ship a code-signing cert.)
 
 **Linux on ARM?** Not in the prebuilt matrix yet — `reqwest`'s `aws-lc-sys`
 cross-compile path is currently flaky enough that we don't want to ship a
