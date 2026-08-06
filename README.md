@@ -190,6 +190,35 @@ cross-compile path is currently flaky enough that we don't want to ship a
 broken archive. ARM Linux users can install via `cargo install doc-scraper-rs`
 from the Rust toolchain they almost certainly already have.
 
+### Install via npm
+
+If you'd rather use the npm registry — same binary, same flags, same
+output — there's an [`doc-scraper`](https://www.npmjs.com/package/doc-scraper)
+wrapper that downloads the right prebuilt at install time:
+
+```bash
+npm install -g doc-scraper
+
+doc-scraper --version
+# doc-scraper 0.1.0
+
+doc-scraper https://docs.strata.markets -o ./strata-docs
+```
+
+Supported platforms (resolved automatically via `optionalDependencies`):
+
+| Platform           | Installed package                  |
+| ------------------ | ---------------------------------- |
+| Linux x64 (glibc)  | `doc-scraper-linux-x64-gnu`        |
+| macOS Intel        | `doc-scraper-darwin-x64`           |
+| macOS Apple Silicon| `doc-scraper-darwin-arm64`         |
+| Windows x64        | `doc-scraper-win32-x64-msvc`       |
+
+On Linux ARM the wrapper detects the missing binary at first invocation
+and prints the same `cargo install` fallback above. The npm version is
+kept in lockstep with the GitHub release tag — `npm i -g doc-scraper@latest`
+always pulls the same artifact as the matching `cargo install`.
+
 ## Usage
 
 The base URL is the only positional argument. Everything else has a sensible default:

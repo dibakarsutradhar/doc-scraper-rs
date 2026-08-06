@@ -4,3 +4,10 @@
 
 # Local smoke-test output from `cargo run --example soft_404_smoke`.
 .doc-scraper-smoke-out-*
+
+# npm wrapper artifacts. Installed binaries land here after `npm install`
+# of the platform packages. We commit the source files (.js / .json /
+# README.md) but not the postinstall output or per-machine install state.
+npm/**/node_modules/
+npm/**/bin/
+npm/**/package-lock.json

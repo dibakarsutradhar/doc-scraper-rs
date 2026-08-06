@@ -44,6 +44,19 @@ All notable changes to `doc-scraper-rs` are recorded here. Versions follow
   CMake toolchain file + cross binutils + sysroot alignment that is too
   fragile for an automated release. Linux ARM users can
   `cargo install doc-scraper-rs` instead.
+- npm wrapper published as five packages — `doc-scraper` (umbrella) plus
+  four platform packages `doc-scraper-linux-x64-gnu`,
+  `doc-scraper-darwin-x64`, `doc-scraper-darwin-arm64`,
+  `doc-scraper-win32-x64-msvc` — under `npm/doc-scraper/` +
+  `npm/platforms/`. `npm install -g doc-scraper` resolves the platform
+  via `optionalDependencies`, downloads the matching binary from the
+  GitHub Release at install time (SHA-256 verified), and exposes the
+  same `doc-scraper` command on `$PATH`. New `.github/workflows/npm.yml`
+  runs after `release.yml` to publish the packages on `v*` tag push.
+  **Additionally builds a `.tar.gz` of every target** alongside the
+  existing `.tar.xz`/`.zip` so the npm install pipeline can extract
+  without depending on platform `xz`/`tar -J` — `.tar.gz` is the only
+  format universally extractable on every OS that has Node installed.
 
 ### Fixed
 

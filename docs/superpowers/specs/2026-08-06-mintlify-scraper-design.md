@@ -129,7 +129,18 @@ Behavior:
   - If `is_mintlify_stub(body)` → return `Err(ScraperError::Other("mintlify stub"))`.
   - Otherwise return `strip_mintlify_banner(body)`.
 
-`fetch_all` similarly threads `shape` through to `fetch_one`.
+`fetch_all` similarly threads `shape` through to `fetch_one`:
+
+```rust
+pub async fn fetch_all(
+    client: reqwest::Client,
+    pages: Vec<PageRef>,
+    concurrency: usize,
+    retries: u32,
+    delay_secs: f64,
+    shape: SitemapShape,
+) -> Vec<std::result::Result<(PageRef, String), (PageRef, ScraperError)>>
+```
 
 #### `src/main.rs` — single call site change
 

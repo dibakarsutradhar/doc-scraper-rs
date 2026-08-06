@@ -169,8 +169,23 @@ jobs:
               ;;
           esac
 
+          # ALSO emit a .tar.gz alongside the primary archive. The npm
+          # wrapper (npm/platforms/*/install.js) prefers .tar.gz because
+          # gzip is extractable on every OS without depending on system
+          # tools (no `xz` on Windows, no `tar -J` on BSD tar). Linux and
+          # macOS runners ship GNU/BSD tar with `-z`; the Windows runner
+          # ships GNU tar from Git for Windows.
+          #
+          # We intentionally use -C "${STAGING}" with the same PKG_NAME
+          # so the archive content matches the existing ones — the npm
+          # installer's expected layout (`<archive-root>/<binName>`)
+          # is unchanged.
+          tar -czf "${ARTIFACT_DIR}/${PKG_NAME}.tar.gz" \
+            -C "${STAGING}" "${PKG_NAME}"
+
           # SHA-256 next to each archive for integrity verification.
-          for f in "${ARTIFACT_DIR}"/*.zip "${ARTIFACT_DIR}"/*.tar.xz; do
+          # The glob now matches zip, tar.xz, and tar.gz outputs.
+          for f in "${ARTIFACT_DIR}"/*.zip "${ARTIFACT_DIR}"/*.tar.xz "${ARTIFACT_DIR}"/*.tar.gz; do
             [[ -e "${f}" ]] || continue
             if command -v sha256sum >/dev/null 2>&1; then
               sha256sum "${f}" > "${f}.sha256"
@@ -226,7 +241,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release-assets
-          find artifacts -type f \( -name '*.zip' -o -name '*.tar.xz' -o -name '*.sha256' \) \
+          find artifacts -type f \( -name '*.zip' -o -name '*.tar.xz' -o -name '*.tar.gz' -o -name '*.sha256' \) \
             -exec cp -v {} release-assets/ \;
           ls -la release-assets
 
