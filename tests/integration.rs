@@ -430,3 +430,99 @@ async fn soft_404_falls_back_to_html() {
         "expected fallback HTML body, got: {written}"
     );
 }
+
+#[tokio::test]
+async fn mintlify_end_to_end() {
+    // Verifies auto-detection of Mintlify's flat `<urlset>` sitemap shape plus
+    // banner stripping on every page. No `--source` flag — the binary should
+    // figure it out from the sitemap alone.
+
+    let server = MockServer::start().await;
+
+    // Flat sitemap.xml (Mintlify shape).
+    let url_a = format!("{}/introduction", server.uri());
+    let url_b = format!("{}/markets/ethena", server.uri());
+    let url_c = format!("{}/guides/start", server.uri());
+    Mock::given(method("GET"))
+        .and(path("/sitemap.xml"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+               <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+                 <url><loc>{url_a}</loc></url>
+                 <url><loc>{url_b}</loc></url>
+                 <url><loc>{url_c}</loc></url>
+               </urlset>"#
+        )))
+        .mount(&server)
+        .await;
+
+    // Each page's `.md` URL returns the Mintlify banner + content.
+    for (slug, title) in &[
+        ("introduction", "Introduction"),
+        ("markets/ethena", "Ethena"),
+        ("guides/start", "Start"),
+    ] {
+        Mock::given(method("GET"))
+            .and(path(format!("/{slug}.md")))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/markdown; charset=utf-8")
+                    .set_body_string(format!(
+                        "> ## Documentation Index\n\
+                         > Fetch the complete documentation index at: https://x/llms.txt\n\
+                         > Use this file to discover all available pages before exploring further.\n\
+                         \n\
+                         # {title}\n\nBody for {title}.\n"
+                    )),
+            )
+            .mount(&server)
+            .await;
+    }
+
+    let out_dir = tempdir().unwrap();
+    let bin = env!("CARGO_BIN_EXE_doc-scraper");
+    let status = std::process::Command::new(bin)
+        .arg(server.uri())
+        .arg("-o")
+        .arg(out_dir.path())
+        .arg("--delay")
+        .arg("0")
+        .arg("--retries")
+        .arg("1")
+        .status()
+        .expect("spawn binary");
+    assert!(status.success(), "binary failed: {status}");
+
+    // All three files present in mirror tree.
+    assert!(
+        out_dir.path().join("introduction.md").exists(),
+        "introduction.md missing"
+    );
+    assert!(
+        out_dir.path().join("markets").join("ethena.md").exists(),
+        "markets/ethena.md missing"
+    );
+    assert!(
+        out_dir.path().join("guides").join("start.md").exists(),
+        "guides/start.md missing"
+    );
+
+    // No banner anywhere in the on-disk output.
+    for path in [
+        out_dir.path().join("introduction.md"),
+        out_dir.path().join("markets").join("ethena.md"),
+        out_dir.path().join("guides").join("start.md"),
+        out_dir.path().join("llms-full.txt"),
+    ] {
+        let s = std::fs::read_to_string(&path).expect("read file");
+        assert!(
+            !s.contains("Documentation Index"),
+            "banner leaked into {}",
+            path.display()
+        );
+    }
+
+    // Title was extracted correctly (first H1 from the body, after banner strip).
+    let intro = std::fs::read_to_string(out_dir.path().join("introduction.md")).unwrap();
+    assert!(intro.starts_with("# Introduction"), "got: {intro:?}");
+}

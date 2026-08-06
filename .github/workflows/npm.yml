@@ -1,0 +1,250 @@
+name: npm
+
+# Publishes the 5 npm packages under npm/ on every GitHub Release tag:
+#   - doc-scraper                       (umbrella, optionalDeps the platforms)
+#   - doc-scraper-linux-x64-gnu
+#   - doc-scraper-darwin-x64
+#   - doc-scraper-darwin-arm64
+#   - doc-scraper-win32-x64-msvc
+#
+# Triggered AFTER release.yml completes on a v* tag, so the matching
+# .tar.gz assets are already attached to the GitHub Release that the
+# per-platform npm install scripts download from.
+#
+# Re-run behavior: if release.yml is re-run via `workflow_dispatch` (e.g.
+# to attach new asset formats to an existing v0.1.0 tag without bumping
+# the version), the install-assertion jobs above will re-validate the
+# newly uploaded assets, but the `publish` job will be SKIPPED — npm
+# cannot republish an existing version, so re-triggering would 409.
+# To publish after a manual rerun, run this workflow's
+# `workflow_dispatch` from the Actions UI.
+#
+# All 5 packages live under the maintainer's personal npm account — no
+# paid npm org required.
+#
+# Required secrets:
+#   NODE_AUTH_TOKEN  — npm automation token with publish rights on every
+#                      package in the maintainer's account. Create at
+#                      https://www.npmjs.com/settings/<user>/tokens
+#                      (type: "Automation").
+#
+# All version assertions and URL construction inside each install script
+# derive from the package's own `version` field, so this workflow does
+# NOT need to thread the upstream tag through env vars.
+
+on:
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Tag to publish (e.g. v0.1.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  # Run `npm pack --dry-run` on every package to catch packaging mistakes
+  # (missing files glob, malformed package.json, etc.) before we publish.
+  # No network, no platform matrix needed.
+  pack-smoke:
+    name: npm pack dry-run
+    runs-on: ubuntu-latest
+    # Skip if upstream release.yml failed, OR if it's a manual re-run from
+    # the Actions UI on a tag that didn't actually publish.
+    if: >
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Checkout the commit that triggered the upstream run, not the
+          # default branch — npm versions in npm/doc-scraper/package.json
+          # and friends must match the upstream tag.
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+
+      - name: Pack every package
+        working-directory: npm
+        run: |
+          set -euo pipefail
+          for pkg in doc-scraper platforms/linux-x64-gnu platforms/darwin-x64 platforms/darwin-arm64 platforms/win32-x64-msvc; do
+            echo "::group::pack $pkg"
+            (cd "$pkg" && npm pack --dry-run)
+            echo "::endgroup::"
+          done
+
+  # End-to-end install + version assertion on every supported OS.
+  # The install scripts derive the version from their own package.json, so
+  # we don't need to thread the tag name through env vars — the only
+  # invariant we assert is "the installed binary reports version X" and
+  # "X matches the package.json version that was published".
+  install-linux-x64:
+    name: Install on linux-x64
+    needs: pack-smoke
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+          fetch-depth: 1
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+      - name: Install umbrella package
+        run: npm install ./npm/doc-scraper
+      - name: Assert version matches package.json
+        run: |
+          set -euo pipefail
+          PKG_VERSION="$(node -p "require('./npm/doc-scraper/package.json').version")"
+          OUT="$(npx doc-scraper --version)"
+          echo "package.json: $PKG_VERSION"
+          echo "binary:       $OUT"
+          [[ "$OUT" == "doc-scraper $PKG_VERSION" ]] || { echo "version mismatch"; exit 1; }
+      - name: Verify binary present
+        run: test -x node_modules/doc-scraper-linux-x64-gnu/bin/doc-scraper
+
+  install-darwin-x64:
+    name: Install on darwin-x64
+    needs: pack-smoke
+    runs-on: macos-14
+    if: >
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+          fetch-depth: 1
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+      - name: Install umbrella package
+        run: npm install ./npm/doc-scraper
+      - name: Assert version matches package.json
+        run: |
+          set -euo pipefail
+          PKG_VERSION="$(node -p "require('./npm/doc-scraper/package.json').version")"
+          OUT="$(npx doc-scraper --version)"
+          echo "package.json: $PKG_VERSION"
+          echo "binary:       $OUT"
+          [[ "$OUT" == "doc-scraper $PKG_VERSION" ]] || { echo "version mismatch"; exit 1; }
+
+  install-darwin-arm64:
+    name: Install on darwin-arm64
+    needs: pack-smoke
+    runs-on: macos-14
+    # macos-14 runners are Apple Silicon (arm64) by default. The matrix
+    # job name is explicit in case that ever changes.
+    if: >
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+          fetch-depth: 1
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+      - name: Install umbrella package
+        run: npm install ./npm/doc-scraper
+      - name: Assert version matches package.json
+        run: |
+          set -euo pipefail
+          PKG_VERSION="$(node -p "require('./npm/doc-scraper/package.json').version")"
+          OUT="$(npx doc-scraper --version)"
+          echo "package.json: $PKG_VERSION"
+          echo "binary:       $OUT"
+          [[ "$OUT" == "doc-scraper $PKG_VERSION" ]] || { echo "version mismatch"; exit 1; }
+
+  install-win32-x64:
+    name: Install on win32-x64
+    needs: pack-smoke
+    runs-on: windows-2022
+    if: >
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+          fetch-depth: 1
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+      - name: Install umbrella package
+        run: npm install ./npm/doc-scraper
+      - name: Assert version matches package.json
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pkgVersion = node -p "require('./npm/doc-scraper/package.json').version"
+          $out = & npx doc-scraper --version
+          Write-Host "package.json: $pkgVersion"
+          Write-Host "binary:       $out"
+          $expected = "doc-scraper $pkgVersion"
+          if ($out -ne $expected) { Write-Error "version mismatch (expected $expected)"; exit 1 }
+
+  publish:
+    name: Publish 5 packages to npm
+    needs:
+      - pack-smoke
+      - install-linux-x64
+      - install-darwin-x64
+      - install-darwin-arm64
+      - install-win32-x64
+    runs-on: ubuntu-latest
+    # Three conditions must hold:
+    #   - if workflow_dispatch, always allow (manual publish trigger).
+    #   - if workflow_run (post-release-yml), the upstream must have
+    #     concluded successfully AND been triggered by a `push` event.
+    #     A `workflow_dispatch` re-run of release.yml (e.g. the upcoming
+    #     re-run on v0.1.0 to attach the new .tar.gz assets) does NOT
+    #     trigger this publish — npm `publish` of an existing version
+    #     would 409 and waste the run. To publish anyway after a rerun,
+    #     trigger this workflow via the Actions UI (workflow_dispatch).
+    if: >
+      (github.event_name == 'workflow_dispatch') ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Publish platform packages (alphabetical order)
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
+        working-directory: npm
+        run: |
+          set -euo pipefail
+          # Publish platform packages first so consumers of `doc-scraper`
+          # can resolve their optionalDependencies as soon as the umbrella
+          # lands.
+          for pkg in platforms/linux-x64-gnu platforms/darwin-x64 platforms/darwin-arm64 platforms/win32-x64-msvc; do
+            echo "::group::publish $pkg"
+            (cd "$pkg" && npm publish --access public)
+            echo "::endgroup::"
+          done
+
+          echo "::group::publish doc-scraper"
+          (cd doc-scraper && npm publish --access public)
+          echo "::endgroup::"

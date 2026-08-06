@@ -1,6 +1,6 @@
 use crate::error::{Result, ScraperError};
 use crate::http::fetch_with_retry;
-use crate::sitemap::PageRef;
+use crate::sitemap::{PageRef, SitemapShape};
 use futures::stream::{FuturesUnordered, StreamExt};
 use regex::Regex;
 use std::sync::{Arc, LazyLock};
@@ -17,6 +17,78 @@ static PAGE_NOT_FOUND: LazyLock<Regex> =
 /// in a non-heading line (e.g. documentation copy).
 pub fn is_gitbook_not_found(body: &str) -> bool {
     PAGE_NOT_FOUND.is_match(body)
+}
+
+/// Returns `body` with the Mintlify doc-index banner removed, if present. If
+/// the prefix doesn't match, returns `body` unchanged. Never panics.
+///
+/// Banner shape (literal):
+///
+/// ```text
+/// > ## Documentation Index
+/// > Fetch the complete documentation index at: <any url>
+/// > Use this file to discover all available pages before exploring further.
+/// <blank line>
+/// # <real title>
+/// …
+/// ```
+pub fn strip_mintlify_banner(body: &str) -> &str {
+    // Three blockquote lines + a blank line, then content. We match by walking
+    // line-by-line; anything that doesn't line up returns `body` unchanged so
+    // legitimate content is never accidentally stripped.
+    let mut lines = body.lines();
+    if lines.next().map(str::trim_start) != Some("> ## Documentation Index") {
+        return body;
+    }
+    let second = match lines.next() {
+        Some(l) => l,
+        None => return body,
+    };
+    if !second
+        .trim_start()
+        .starts_with("> Fetch the complete documentation index at:")
+    {
+        return body;
+    }
+    if lines
+        .next()
+        .map(str::trim_start)
+        .map(|s| s.starts_with("> Use this file to discover"))
+        != Some(true)
+    {
+        return body;
+    }
+    // The fourth element is the blank separator line — accept any whitespace-only
+    // line here (Mintlify ships "\n", we tolerate trailing spaces).
+    match lines.next() {
+        Some(l) if l.trim().is_empty() => {}
+        _ => return body,
+    }
+    // Slice off the 4 lines (3 banner + 1 blank). Compute the byte offset by
+    // summing len-including-newline of each consumed line.
+    let consumed = body
+        .split_inclusive('\n')
+        .take(4)
+        .map(str::len)
+        .sum::<usize>();
+    if body.len() < consumed {
+        return body;
+    }
+    &body[consumed..]
+}
+
+/// Returns `true` when `body` looks like a Mintlify stub rather than a real
+/// page. Heuristic: fewer than 100 bytes **and** no `# ` (ATX H1) heading line.
+/// The heading check protects against very short legitimate pages (rare but
+/// real on landing pages) from being misclassified as stubs.
+pub fn is_mintlify_stub(body: &str) -> bool {
+    if body.len() >= 100 {
+        return false;
+    }
+    !body.lines().any(|l| {
+        let t = l.trim_start();
+        t.starts_with("# ") && !t.starts_with("##")
+    })
 }
 
 /// Convert a page URL into its `.md` endpoint form.
@@ -49,6 +121,7 @@ pub async fn fetch_all(
     concurrency: usize,
     retries: u32,
     mut delay_secs: f64,
+    shape: SitemapShape,
 ) -> Vec<std::result::Result<(PageRef, String), (PageRef, ScraperError)>> {
     // Clamp negative user-supplied delay to zero. The pre-fetch sleep in
     // `fetch_one` and the exponential backoff inside `fetch_with_retry` both
@@ -74,7 +147,7 @@ pub async fn fetch_all(
             let _permit = permit_sem.acquire_owned().await.unwrap_or_else(|_| {
                 unreachable!("semaphore is owned by this future and never closed")
             });
-            let result = fetch_one(&client, &page.loc, retries, delay_secs).await;
+            let result = fetch_one(&client, &page.loc, retries, delay_secs, shape).await;
             match result {
                 Ok(body) => Ok((page, body)),
                 Err(e) => Err((page, e)),
@@ -89,14 +162,22 @@ pub async fn fetch_all(
     out
 }
 
-/// Fetches a page by first requesting its `.md` endpoint. If GitBook returns a
-/// soft-404 markdown stub, fall back to the bare HTML URL with no extra delay
-/// (we already paid the politeness cost on the first request).
+/// Fetches a page by first requesting its `.md` endpoint. Behavior after that
+/// depends on the platform shape:
+///
+/// - **GitBookIndex** — if the `.md` response looks like a soft-404 stub, fall
+///   back to the bare HTML URL (no extra delay; we already paid the politeness
+///   cost on the first request).
+/// - **MintlifyUrlset** — if the `.md` response looks like a stub, surface as
+///   an error (no HTML fallback: Mintlify stubs lack useful content and the
+///   HTML page is a SPA shell). Otherwise strip the doc-index banner Mintlify
+///   prepends to every page.
 async fn fetch_one(
     client: &reqwest::Client,
     url: &Url,
     retries: u32,
     delay_secs: f64,
+    shape: SitemapShape,
 ) -> Result<String> {
     let primary = to_md_url(url);
     let primary = match primary {
@@ -115,15 +196,28 @@ async fn fetch_one(
     let resp = fetch_with_retry(client, &primary, retries, delay_secs).await?;
     let body = resp.text().await?;
 
-    if is_gitbook_not_found(&body) {
-        // Fall back to the bare URL (HTML). Reuse the same retry budget so we
-        // don't silently give up on transient outages here. No additional delay:
-        // we've already waited on the first try.
-        let resp = fetch_with_retry(client, url, retries, 0.0).await?;
-        return resp.text().await.map_err(ScraperError::Http);
+    match shape {
+        SitemapShape::GitBookIndex => {
+            if is_gitbook_not_found(&body) {
+                // Fall back to the bare URL (HTML). Reuse the same retry budget
+                // so we don't silently give up on transient outages here. No
+                // additional delay: we've already waited on the first try.
+                let resp = fetch_with_retry(client, url, retries, 0.0).await?;
+                return resp.text().await.map_err(ScraperError::Http);
+            }
+            Ok(body)
+        }
+        SitemapShape::MintlifyUrlset => {
+            if is_mintlify_stub(&body) {
+                // Surface stubs as errors so they count toward `exit 2` and the
+                // user sees them in `--verbose`. We don't fall back to HTML —
+                // Mintlify stubs lack useful content and trying the HTML page
+                // would dump the SPA shell into the mirror tree.
+                return Err(ScraperError::Other(format!("mintlify stub: {url}")));
+            }
+            Ok(strip_mintlify_banner(&body).to_string())
+        }
     }
-
-    Ok(body)
 }
 
 #[cfg(test)]
@@ -208,7 +302,7 @@ mod tests {
                 lastmod: None,
             },
         ];
-        let results = fetch_all(client, pages, 2, 0, 0.0).await;
+        let results = fetch_all(client, pages, 2, 0, 0.0, SitemapShape::GitBookIndex).await;
         assert_eq!(results.len(), 2);
         for r in &results {
             let (_page, body) = r.as_ref().unwrap();
@@ -245,7 +339,7 @@ mod tests {
             loc: Url::parse(&format!("{}/missing", server.uri())).unwrap(),
             lastmod: None,
         }];
-        let results = fetch_all(client, pages, 1, 0, 0.0).await;
+        let results = fetch_all(client, pages, 1, 0, 0.0, SitemapShape::GitBookIndex).await;
         assert_eq!(results.len(), 1);
         let (_, body) = results.into_iter().next().unwrap().unwrap();
         assert!(
@@ -262,7 +356,7 @@ mod tests {
             loc: Url::parse(&server.uri()).unwrap(), // root: no .md form
             lastmod: None,
         }];
-        let results = fetch_all(client, pages, 1, 0, 0.0).await;
+        let results = fetch_all(client, pages, 1, 0, 0.0, SitemapShape::GitBookIndex).await;
         assert_eq!(results.len(), 1);
         assert!(results[0].is_err(), "root URL must surface an error");
     }
@@ -290,7 +384,7 @@ mod tests {
             .collect();
         // 4 pages, each 100ms, concurrency=2 → at least ~200ms total.
         let start = std::time::Instant::now();
-        let results = fetch_all(client, pages, 2, 0, 0.0).await;
+        let results = fetch_all(client, pages, 2, 0, 0.0, SitemapShape::GitBookIndex).await;
         let elapsed = start.elapsed();
         assert_eq!(results.len(), 4);
         assert!(elapsed >= std::time::Duration::from_millis(180));
@@ -322,11 +416,112 @@ mod tests {
             },
         ];
         // 0 retries → /bad surfaces as error, /ok returns ok.
-        let results = fetch_all(client, pages, 2, 0, 0.0).await;
+        let results = fetch_all(client, pages, 2, 0, 0.0, SitemapShape::GitBookIndex).await;
         assert_eq!(results.len(), 2);
         let oks = results.iter().filter(|r| r.is_ok()).count();
         let errs = results.iter().filter(|r| r.is_err()).count();
         assert_eq!(oks, 1);
         assert_eq!(errs, 1);
+    }
+
+    #[test]
+    fn strip_mintlify_banner_strips_exact_prefix() {
+        let body = "> ## Documentation Index\n\
+                    > Fetch the complete documentation index at: https://x/llms.txt\n\
+                    > Use this file to discover all available pages before exploring further.\n\
+                    \n\
+                    # Real Title\n\nbody\n";
+        let stripped = strip_mintlify_banner(body);
+        assert!(stripped.starts_with("# Real Title"), "got: {stripped:?}");
+        assert!(!stripped.contains("Documentation Index"), "banner leaked");
+    }
+
+    #[test]
+    fn strip_mintlify_banner_unchanged_when_missing() {
+        let body = "# Real Title\n\nbody\n";
+        assert_eq!(strip_mintlify_banner(body), body);
+    }
+
+    #[test]
+    fn strip_mintlify_banner_unchanged_on_partial_match() {
+        let body = "> ## Documentation Index\n\n# Real Title\n";
+        assert_eq!(
+            strip_mintlify_banner(body),
+            body,
+            "partial prefix must be left alone"
+        );
+    }
+
+    #[test]
+    fn strip_mintlify_banner_preserves_content_when_already_clean() {
+        let body = "# Real Title\n\nbody\n";
+        // No banner → unchanged.
+        assert_eq!(strip_mintlify_banner(body), body);
+    }
+
+    #[test]
+    fn is_mintlify_stub_short_no_heading_true() {
+        assert!(is_mintlify_stub("just a few words here"));
+    }
+
+    #[test]
+    fn is_mintlify_stub_short_with_heading_false() {
+        assert!(!is_mintlify_stub("# Tiny\n\nx"));
+    }
+
+    #[test]
+    fn is_mintlify_stub_long_no_heading_false() {
+        // >100 bytes total; no `# ` heading anywhere — should NOT be a stub
+        // by the long-body leg of the heuristic.
+        let body = "a".repeat(200);
+        assert!(!is_mintlify_stub(&body));
+    }
+
+    #[tokio::test]
+    async fn fetch_one_mintlify_strips_banner_and_returns_body() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/x.md"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                "> ## Documentation Index\n\
+                 > Fetch the complete documentation index at: https://x/llms.txt\n\
+                 > Use this file to discover all available pages before exploring further.\n\
+                 \n\
+                 # Real Title\n\nBody paragraph.\n",
+            ))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let url = Url::parse(&format!("{}/x", server.uri())).unwrap();
+        let body = fetch_one(&client, &url, 0, 0.0, SitemapShape::MintlifyUrlset)
+            .await
+            .unwrap();
+        assert!(body.starts_with("# Real Title"), "got: {body:?}");
+        assert!(!body.contains("Documentation Index"));
+    }
+
+    #[tokio::test]
+    async fn fetch_one_mintlify_stub_returns_error() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/x.md"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("tiny stub"))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let url = Url::parse(&format!("{}/x", server.uri())).unwrap();
+        let result = fetch_one(&client, &url, 0, 0.0, SitemapShape::MintlifyUrlset).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            ScraperError::Other(_) => {}
+            other => panic!("expected ScraperError::Other, got {other:?}"),
+        }
     }
 }

@@ -3,7 +3,7 @@
 .DS_Store
 
 # Local smoke-test output from `cargo run --example soft_404_smoke`.
-.doc-scraper-smoke-out-*
+.doc-scraper-*
 
 # npm wrapper artifacts. Installed binaries land here after `npm install`
 # of the platform packages. We commit the source files (.js / .json /
@@ -11,3 +11,7 @@
 npm/**/node_modules/
 npm/**/bin/
 npm/**/package-lock.json
+.playwright-mcp
+docs/**
+npm/
+scripts/build*

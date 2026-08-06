@@ -101,7 +101,15 @@ async fn main() -> anyhow::Result<()> {
 
     // 1. Sitemap
     eprintln!("Fetching sitemap for {}...", cfg.url);
-    let pages = sitemap::fetch_sitemap(&client, &cfg.url).await?;
+    let (shape, pages) = sitemap::fetch_sitemap(&client, &cfg.url).await?;
+    let shape_label = match shape {
+        sitemap::SitemapShape::GitBookIndex => "gitbook-index",
+        sitemap::SitemapShape::MintlifyUrlset => "mintlify-urlset",
+    };
+    eprintln!(
+        "Detected sitemap shape: {shape_label} ({} pages)",
+        pages.len()
+    );
     if pages.is_empty() {
         // C6: do NOT create the output dir before we know we have work to do.
         anyhow::bail!("sitemap returned zero pages");
@@ -146,6 +154,7 @@ async fn main() -> anyhow::Result<()> {
         cfg.concurrency,
         cfg.retries,
         cfg.delay_secs,
+        shape,
     )
     .await;
     pb.finish_and_clear();

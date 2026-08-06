@@ -44,6 +44,7 @@ GitBook Next.js-rendered sites expose every page twice: once as a fully-rendered
 | Politeness delay between requests          | `--delay`  | `--delay 0.3` by default; set `--delay 0` for benchmark / trusted local mirrors.                |
 | Concurrent fan-out                         | `--concurrency` | Tokio semaphore; `--concurrency 20` by default. Bounded retry loop on 5xx and 429.        |
 | Legacy HTML-scraping mode (pre–Next.js)    | `--legacy` | Fallback for old GitBook sites that don't expose the `.md` endpoint.                           |
+| Mintlify site auto-detection              | ✅         | Detects Mintlify sitemap shape (flat `<urlset>` directly in `sitemap.xml`), strips the doc-index banner Mintlify prepends to `.md` responses, and drops stub bodies. No extra flag needed. |
 
 ## Installation
 
@@ -190,35 +191,6 @@ cross-compile path is currently flaky enough that we don't want to ship a
 broken archive. ARM Linux users can install via `cargo install doc-scraper-rs`
 from the Rust toolchain they almost certainly already have.
 
-### Install via npm
-
-If you'd rather use the npm registry — same binary, same flags, same
-output — there's an [`doc-scraper`](https://www.npmjs.com/package/doc-scraper)
-wrapper that downloads the right prebuilt at install time:
-
-```bash
-npm install -g doc-scraper
-
-doc-scraper --version
-# doc-scraper 0.1.0
-
-doc-scraper https://docs.strata.markets -o ./strata-docs
-```
-
-Supported platforms (resolved automatically via `optionalDependencies`):
-
-| Platform           | Installed package                  |
-| ------------------ | ---------------------------------- |
-| Linux x64 (glibc)  | `doc-scraper-linux-x64-gnu`        |
-| macOS Intel        | `doc-scraper-darwin-x64`           |
-| macOS Apple Silicon| `doc-scraper-darwin-arm64`         |
-| Windows x64        | `doc-scraper-win32-x64-msvc`       |
-
-On Linux ARM the wrapper detects the missing binary at first invocation
-and prints the same `cargo install` fallback above. The npm version is
-kept in lockstep with the GitHub release tag — `npm i -g doc-scraper@latest`
-always pulls the same artifact as the matching `cargo install`.
-
 ## Usage
 
 The base URL is the only positional argument. Everything else has a sensible default:
@@ -305,6 +277,24 @@ Re-runs are safe even with filters active: `--overwrite` is not implied. Set `--
 
 If a sitemap URL's `.md` endpoint returns GitBook's "Page Not Found" stub (HTTP 200 with `# Page Not Found` as the first heading — the typical case when a page was published to the sitemap before the `.md` route was wired up), the scraper automatically falls back to the bare page URL. That fallback body is written to the same target path as the `.md` would have been. The detection is content-based because the soft 200 doesn't look like a 404 on the wire.
 
+### Mintlify sites
+
+`doc-scraper-rs` auto-detects Mintlify-hosted documentation. The same
+`text/markdown` endpoint exists on Mintlify as on GitBook; only the
+sitemap shape differs (Mintlify uses a flat `<urlset>` in
+`/sitemap.xml`, GitBook uses a `<sitemapindex>` pointing at
+`sitemap-pages.xml`). No extra flag is needed:
+
+```bash
+doc-scraper https://docs.livepeer.org -o ./livepeer-docs
+```
+
+Mintlify prepends a small doc-index banner to every page's `.md`
+response. It's stripped automatically from the mirror tree and all
+sidecars. Pages whose `.md` response is a short stub (e.g. an unknown
+page that made it into the sitemap) are dropped and counted toward the
+fetch-error total — re-run with `--verbose` to see which ones.
+
 ### Feeding LLMs
 
 Every scrape produces two LLM-ready artefacts in the output directory:
@@ -337,12 +327,14 @@ Disable `AGENTS.md` and `skills/` (along with `llms.txt` / `llms-full.txt`) with
 
 ## Examples
 
-The `examples/` directory ships one runnable smoke test:
+The `examples/` directory ships two runnable smoke tests:
 
 - **`soft_404_smoke.rs`** — pulls a known GitBook site that returns the soft-404 stub on a subset of pages, and asserts the fallback produced a non-empty body.
+- **`mintlify_smoke.rs`** — spins up a `wiremock` server that emulates a Mintlify site (flat `<urlset>` sitemap + `.md` endpoint with the doc-index banner) and asserts each on-disk page has the banner stripped.
 
   ```bash
   cargo run --example soft_404_smoke
+  cargo run --example mintlify_smoke
   ```
 
 Integration tests under `tests/integration.rs` spin up a `wiremock` server that emulates both a clean `.md` site and the soft-404 case end-to-end:
@@ -377,7 +369,7 @@ src/
 └── legacy.rs        # pre–Next.js HTML-scraper stub
 
 tests/               # wiremock integration tests
-examples/            # soft_404_smoke
+examples/            # soft_404_smoke, mintlify_smoke
 ```
 
 ## Benchmark
